@@ -7,7 +7,7 @@ import asyncio
 logging.basicConfig(level=logging.INFO)
 
 # Инициализация бота
-bot = Bot(token="7039707379:AAECiESCcebjwMbonkYQjceCCjRjpGSwl4g")
+bot = Bot(token="")
 # Создание диспетчера с указанием бота и loop
 dp = Dispatcher(bot)
 
