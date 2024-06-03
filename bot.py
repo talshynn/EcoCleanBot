@@ -1,102 +1,94 @@
 import logging
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
-import asyncio
 
-# Установка логгера для вывода ошибок
+import openai
+from aiogram import Bot, Dispatcher, types, executor
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from config import API_TOKEN
+from database.db import create_tables, insert_initial_company_info, create_news_table, insert_sample_news, \
+    insert_admins, insert_washers, insert_orders
+
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Инициализация бота
-bot = Bot(token="")
-# Создание диспетчера с указанием бота и loop
-dp = Dispatcher(bot)
+bot = Bot(token=API_TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
+
+# Создание клавиатуры с кнопками меню
+markup = ReplyKeyboardMarkup(resize_keyboard=True)
+markup.add(KeyboardButton("Мой профиль"))
+markup.add(KeyboardButton("Цены"))
+markup.add(KeyboardButton("Закажите очистку"))
+markup.add(KeyboardButton("Оставьте комментарий"))
+markup.add(KeyboardButton("Информация о компании"))
+markup.add(KeyboardButton("Пример работы"))
+markup.add(KeyboardButton("Показать все новости"))
+markup.add(KeyboardButton("Начать диалог с OpenAI"))
+
+
+class CleaningOrder(StatesGroup):
+    waiting_for_cleaning_type = State()
+    waiting_for_area = State()
+    waiting_for_address = State()
+
 
 # Глобальные переменные для хранения имени и номера телефона
 name = ""
 phone_number = ""
 birthday = ""
+registered = False  # Переменная для отслеживания успешной регистрации
+cleaning_type = ""
+cleaning_standard = ""
+area = 0
 
-# Обработчик команды /start
-@dp.message_handler(commands=['start'])
-async def start(message: types.Message):
-    # Приветственное сообщение и кнопка "Пройти регистрацию"
-    await message.answer("EcoCleanBot - удобный сервис для записи на уборку и химчистку. \nЧтобы продолжить, пройдите регистрацию👇",
-                         reply_markup=ReplyKeyboardMarkup(
-                             keyboard=[
-                                 [KeyboardButton(text="Пройти регистрацию")]
-                             ],
-                             resize_keyboard=True,
-                             selective=True  # Добавим атрибут selective=True
-                         ))
 
-# Обработчик для кнопки "Пройти регистрацию"
-@dp.message_handler(lambda message: message.text == "Пройти регистрацию")
-async def register_start(message: types.Message):
-    # Запрос имени
-    await message.answer("Введите ваше имя👇",
-                         reply_markup=ReplyKeyboardRemove())  # Удаляем клавиатуру
+# Глобальная переменная для хранения статуса диалога с OpenAI
+openai_dialog_active = False
 
-# Обработчик для имени
-@dp.message_handler(lambda message: name == "")
-async def register_name(message: types.Message):
-    global name
-    name = message.text
-    # Запрос номера телефона
-    await message.answer("Для продолжения введите номер телефона в международном формате. Пример: +77007801799",
-                         reply_markup=ReplyKeyboardRemove())  # Удаляем клавиатуру
 
-# Обработчик для номера телефона
-@dp.message_handler(lambda message: phone_number == "")
-async def register_phone(message: types.Message):
-    global phone_number
-    phone_number = message.text
-    # Запрос даты рождения
-    await message.answer("Напишите дату вашего рождения в формате ДД.ММ.ГГГГ. Например, 01.01.2000",
-                         reply_markup=ReplyKeyboardRemove())  # Удаляем клавиатуру
+@dp.message_handler(lambda message: message.text == "Начать диалог с OpenAI" and not openai_dialog_active)
+async def start_openai_dialog(message: types.Message):
+    global openai_dialog_active
+    openai_dialog_active = True
+    await openai_dialog_start(message)
 
-# Обработчик для даты рождения
-@dp.message_handler(lambda message: birthday == "")
-async def register_birthday(message: types.Message):
-    global birthday
-    birthday = message.text
-    # Проверка данных и кнопки "Подтверждаю" / "Изменить"
-    user_info = f"Ваше имя: {name}\nНомер телефона: {phone_number}\nДата рождения: {birthday}"
-    await message.answer(f"Проверьте ваши данные:\n{user_info}",
-                         reply_markup=ReplyKeyboardMarkup(
-                             keyboard=[
-                                 [KeyboardButton(text="Подтверждаю")],
-                                 [KeyboardButton(text="Изменить")]
-                             ],
-                             resize_keyboard=True,
-                             selective=True  # Добавим атрибут selective=True
-                         ))
 
-# Обработчик для кнопок "Подтверждаю" / "Изменить"
-@dp.message_handler(lambda message: message.text in ["Подтверждаю", "Изменить"])
-async def register_confirmation(message: types.Message):
-    if message.text == "Подтверждаю":
-        await message.answer("Регистрация успешно завершена!")
-    else:
-        # Сброс данных и повторный запрос
-        global name, phone_number, birthday
-        name = ""
-        phone_number = ""
-        birthday = ""
-        await message.answer("Давайте начнем регистрацию заново!")
-        # Приветственное сообщение и кнопка "Пройти регистрацию"
-        await message.answer("Чтобы продолжить, пройдите регистрацию👇",
-                             reply_markup=ReplyKeyboardMarkup(
-                                 keyboard=[
-                                     [KeyboardButton(text="Пройти регистрацию")]
-                                 ],
-                                 resize_keyboard=True,
-                                 selective=True  # Добавим атрибут selective=True
-                             ))
+# Обработчик для запуска диалога с OpenAI
+async def openai_dialog_start(message: types.Message):
+    await message.answer("Вы начали диалог с OpenAI. Задайте ваш вопрос:")
+    # Здесь мы не будем регистрировать новый обработчик, так как используем флаг openai_dialog_active
 
-async def main():
-    # Запуск бота
-    await dp.start_polling()
 
+# Обработчик для получения вопроса и отправки запроса в OpenAI
+@dp.message_handler(lambda message: openai_dialog_active)
+async def process_openai_question(message: types.Message):
+    # Отправляем сообщение пользователя в OpenAI для обработки
+    response = openai.ChatCompletion.create(
+        model="gpt-4-turbo-preview",
+        messages=[{"role": "user", "content": message.text}]
+    )
+
+    # Отправляем ответ от OpenAI боту пользователю
+    await message.answer(response.choices[0].message['content'])
+
+    # Закрываем диалог после ответа
+    global openai_dialog_active
+    openai_dialog_active = False
+    await message.answer("Что вы хотите сделать дальше?", reply_markup=markup)
+ 
+
+
+# Запуск бота
 if __name__ == '__main__':
-    # Запуск асинхронного main-цикла
-    asyncio.run(main())
+    create_tables()  # Создание таблиц в базе данных
+    insert_initial_company_info()
+    create_news_table()
+    insert_sample_news()
+    insert_admins()
+    insert_washers()
+    insert_orders()
+    executor.start_polling(dp, skip_updates=True, timeout=30)
